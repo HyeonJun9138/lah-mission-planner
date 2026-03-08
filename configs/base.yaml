@@ -1,0 +1,188 @@
+# LAH 회전익기 안전 경로계획 강화학습 기본 설정
+# 설계서 23절 config 예시 기반
+
+project:
+  name: lah_local_safe_path
+  seed: 42
+  version: "1.0.0"
+
+# ─────────────────────────────────────────────
+# 데이터 경로
+# ─────────────────────────────────────────────
+data:
+  primary_dem:
+    - resource/Hongik_48km.tif
+    - resource/Inje_48km.tif
+    - resource/Jipo_48km.tif
+  fallback_dem:
+    - resource/n37_e126_1arc_v3.tif
+    - resource/n37_e127_1arc_v3.tif
+    - resource/n37_e128_1arc_v3.tif
+    - resource/n38_e126_1arc_v3.tif
+    - resource/n38_e127_1arc_v3.tif
+    - resource/n38_e128_1arc_v3.tif
+  routes_dir: data/routes/
+  airspace_dir: data/airspace/
+  obstacles_dir: data/obstacles/
+  cache_dir: cache/
+
+# ─────────────────────────────────────────────
+# 합성 지형 (synthetic terrain) 설정
+# DEM 없을 때 사용
+# ─────────────────────────────────────────────
+synthetic_terrain:
+  size_x: 500         # 동서 방향 격자 수
+  size_y: 500         # 남북 방향 격자 수
+  resolution: 30.0    # 격자 해상도 [m]
+  base_elevation: 200.0  # 기반 고도 [m]
+  max_elevation: 1200.0  # 최대 고도 [m]
+  seed: 42
+
+# ─────────────────────────────────────────────
+# ref path 설정
+# ─────────────────────────────────────────────
+route:
+  ref_path_file: data/routes/ref_route_default.json
+  resample_step_m: 50.0          # 리샘플 간격 [m]
+  soft_corridor_m: 400.0         # soft corridor 반폭 [m]
+  hard_corridor_m: 1000.0        # hard corridor 반폭 [m]
+  band_center_halfwidth_m: 100.0 # center band 반폭 [m]
+  band_side_outer_m: 500.0       # side band 외부 경계 [m]
+
+# ─────────────────────────────────────────────
+# 환경 파라미터
+# ─────────────────────────────────────────────
+env:
+  dt: 1.0             # 시뮬레이션 시간 간격 [s]
+  v_min: 0.0          # 최소 속도 [m/s]
+  v_max: 70.0         # 최대 속도 [m/s]
+  v_init: 40.0        # 초기 속도 [m/s]
+  vz_min: -6.0        # 최대 하강 속도 [m/s]
+  vz_max: 6.0         # 최대 상승 속도 [m/s]
+  max_turn_deg_s: 12.0  # 최대 선회율 [deg/s]
+  agl_safe_min: 120.0 # AGL 절대 최소 [m]
+  agl_pref: 180.0     # AGL 권장값 [m]
+  max_steps: 1000     # 최대 에피소드 스텝 수
+  goal_radius: 200.0  # 목표 도달 반경 [m]
+
+  # 리셋 랜덤화
+  start_pos_noise_m: 50.0        # 시작 위치 노이즈 [m]
+  start_heading_noise_deg: 15.0  # 시작 기수각 노이즈 [deg]
+  start_speed_noise_ms: 5.0      # 시작 속도 노이즈 [m/s]
+  start_alt_noise_m: 30.0        # 시작 고도 노이즈 [m]
+
+# ─────────────────────────────────────────────
+# Observation 파라미터
+# ─────────────────────────────────────────────
+obs:
+  patch_size: 32              # 로컬 패치 크기 [픽셀]
+  patch_channels: 3           # 로컬 패치 채널 수
+  patch_resolution_m: 30.0   # 패치 해상도 [m]
+  lookahead_points: 16        # 앞쪽 참조 포인트 수
+  lookahead_features: 4       # 포인트당 feature 수
+  route_profile_steps: 20     # corridor profile K-step 수
+  state_vec_dim: 13           # 상태 벡터 차원
+
+# ─────────────────────────────────────────────
+# 보상 가중치
+# ─────────────────────────────────────────────
+reward:
+  w_prog: 2.0          # ref path 진행 보상
+  w_goal: 0.5          # 목표 거리 감소 보상
+  w_d: 0.8             # cross-track 이탈 페널티
+  w_zref: 0.2          # 권장 고도 오차 페널티
+  w_risk: 1.0          # 현재 위치 위험도 페널티
+  w_risk_a: 0.7        # 앞쪽 위험도 페널티
+  w_clear: 3.0         # 지형 여유 부족 페널티
+  w_smooth: 0.05       # 제어 변화 페널티
+  w_energy: 0.05       # 과도한 속도/상승 페널티
+  w_hold: 0.03         # hold 남용 페널티
+  w_hold_good: 0.02    # 앞 위험 높을 때 hold 보너스
+  terminal_success: 150.0     # 성공 terminal reward
+  terminal_collision: -150.0  # 충돌 terminal reward
+  terminal_out: -100.0        # 이탈 terminal reward
+  terminal_timeout: -30.0     # 타임아웃 terminal reward
+
+# ─────────────────────────────────────────────
+# 지형 특징 계산 파라미터
+# ─────────────────────────────────────────────
+terrain_features:
+  roughness_window: 5  # 거칠기 계산 창 크기
+  relief_window: 7     # 기복 계산 창 크기
+  tpi_window: 7        # TPI 계산 창 크기
+  risk_weights:
+    slope: 0.35
+    roughness: 0.25
+    relief: 0.20
+    ridge: 0.10
+    valley: 0.10
+  landing_weights:
+    slope: 0.5
+    roughness: 0.3
+    relief: 0.2
+
+# ─────────────────────────────────────────────
+# 학습 파라미터 (PPO baseline)
+# ─────────────────────────────────────────────
+train:
+  algo: PPO
+  total_timesteps: 1_000_000
+  n_envs: 4                # 병렬 환경 수 (초기 가볍게)
+  eval_freq: 20_000
+  n_eval_episodes: 10
+  save_freq: 100_000
+  log_dir: outputs/logs
+  model_dir: outputs/models
+
+ppo:
+  learning_rate: 3.0e-4
+  n_steps: 1024
+  batch_size: 2048
+  n_epochs: 10
+  gamma: 0.995
+  gae_lambda: 0.97
+  ent_coef: 0.005
+  clip_range: 0.2
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+
+sac:
+  learning_rate: 3.0e-4
+  buffer_size: 500_000
+  learning_starts: 5_000
+  batch_size: 512
+  gamma: 0.995
+  tau: 0.005
+  train_freq: 1
+  gradient_steps: 1
+  ent_coef: auto
+
+# ─────────────────────────────────────────────
+# Optuna 튜닝 설정
+# ─────────────────────────────────────────────
+tuning:
+  algo: PPO
+  n_trials: 20
+  timeout: 3600  # [s]
+  eval_timesteps: 30_000
+  n_eval_episodes: 5
+  output_dir: outputs/tuning
+
+# ─────────────────────────────────────────────
+# 서버 설정
+# ─────────────────────────────────────────────
+server:
+  host: 0.0.0.0
+  port: 8000
+  reload: false
+  log_level: info
+
+# ─────────────────────────────────────────────
+# 출력 경로
+# ─────────────────────────────────────────────
+outputs:
+  models: outputs/models
+  logs: outputs/logs
+  eval: outputs/eval
+  episodes: outputs/episodes
+  reports: outputs/reports

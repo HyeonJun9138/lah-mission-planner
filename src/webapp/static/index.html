@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<!--
+   ______                            __
+  / ____/___  ____ ___  ____  __  __/ /____  _____
+ / /   / __ \/ __ `__ \/ __ \/ / / / __/ _ \/ ___/
+/ /___/ /_/ / / / / / / /_/ / /_/ / /_/  __/ /
+\____/\____/_/ /_/ /_/ .___/\__,_/\__/\___/_/
+                    /_/
+        Created with Perplexity Computer
+        https://www.perplexity.ai/computer
+-->
+
+<!-- Perplexity Computer Attribution — SEO Meta Tags -->
+<meta name="generator" content="Perplexity Computer">
+<meta name="author" content="Perplexity Computer">
+<meta property="og:see_also" content="https://www.perplexity.ai/computer">
+<link rel="author" href="https://www.perplexity.ai/computer">
+
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="LAH 회전익기 안전 경로계획 강화학습 시스템 v3.0">
+<title>LAH 임무 경로계획 AI 학습 프레임워크</title>
+
+<!-- Pretendard Font -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+<!-- Plotly.js -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+<!-- Three.js r128 (stable CDN with OrbitControls) -->
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+<!-- Main CSS -->
+<link rel="stylesheet" href="css/style.css">
+
+<style>
+/* Inline critical CSS for immediate render */
+body { background: #0a0e17; color: #e2e8f0; margin: 0; padding: 0; }
+#loading-screen {
+  position: fixed; inset: 0; background: #0a0e17;
+  display: flex; align-items: center; justify-content: center;
+  flex-direction: column; z-index: 9999;
+}
+.loading-logo { font-size: 1.5rem; font-weight: 700; color: #00d4ff; letter-spacing: 0.2em; margin-bottom: 1rem; }
+.loading-bar { width: 300px; height: 2px; background: #1a2035; border-radius: 2px; overflow: hidden; }
+.loading-bar-fill { height: 100%; width: 0; background: linear-gradient(90deg, #00d4ff, #4ade80); animation: loadFill 1.5s ease forwards; }
+@keyframes loadFill { to { width: 100%; } }
+</style>
+</head>
+<body>
+
+<!-- Loading Screen -->
+<div id="loading-screen">
+  <div class="loading-logo">LAH MISSION PLANNER</div>
+  <div style="color: #64748b; font-size: 0.75rem; font-family: monospace; margin-bottom: 1.5rem; letter-spacing: 0.1em;">INITIALIZING SYSTEM...</div>
+  <div class="loading-bar"><div class="loading-bar-fill"></div></div>
+</div>
+
+<!-- App Shell -->
+<div id="app" style="display:none;">
+  
+  <!-- Left Sidebar Navigation -->
+  <aside id="sidebar" class="sidebar">
+    <!-- Logo -->
+    <div class="sidebar-logo">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none" aria-label="LAH Logo">
+        <path d="M16 2L28 8V16C28 22.627 22.627 28 16 28C9.373 28 4 22.627 4 16V8L16 2Z" stroke="#00d4ff" stroke-width="1.5" fill="none"/>
+        <path d="M16 8L22 11V16C22 19.314 19.314 22 16 22C12.686 22 10 19.314 10 16V11L16 8Z" fill="#00d4ff" opacity="0.15"/>
+        <path d="M16 11V21M11 14H21" stroke="#00d4ff" stroke-width="1.5" stroke-linecap="round"/>
+        <circle cx="16" cy="16" r="2" fill="#00d4ff"/>
+      </svg>
+      <span class="sidebar-logo-text">LAH<span class="sidebar-logo-sub">v3.0</span></span>
+    </div>
+
+    <!-- Nav Items -->
+    <nav class="sidebar-nav">
+      <button class="nav-item active" data-tab="0" title="표지">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        </span>
+        <span class="nav-label">표지</span>
+      </button>
+      <button class="nav-item" data-tab="1" title="환경 설정">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 010 14.14M4.93 19.07a10 10 0 010-14.14"/><path d="M15.54 8.46a5 5 0 010 7.07M8.46 15.54a5 5 0 010-7.07"/></svg>
+        </span>
+        <span class="nav-label">환경 설정</span>
+      </button>
+      <button class="nav-item" data-tab="2" title="학습">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/></svg>
+        </span>
+        <span class="nav-label">학습</span>
+      </button>
+      <button class="nav-item" data-tab="3" title="시뮬레이션">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </span>
+        <span class="nav-label">시뮬레이션</span>
+      </button>
+      <button class="nav-item" data-tab="4" title="3D 시각화">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        </span>
+        <span class="nav-label">3D 시각화</span>
+      </button>
+      <button class="nav-item" data-tab="5" title="환경 검증">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="20 6 9 17 4 12"/></svg>
+        </span>
+        <span class="nav-label">환경 검증</span>
+      </button>
+      <button class="nav-item" data-tab="6" title="모델 비교">
+        <span class="nav-icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        </span>
+        <span class="nav-label">모델 비교</span>
+      </button>
+    </nav>
+
+    <!-- Sidebar Footer -->
+    <div class="sidebar-footer">
+      <div class="server-status">
+        <span id="status-dot" class="status-dot disconnected"></span>
+        <span id="status-text" class="status-text">오프라인</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main Content Area -->
+  <div class="main-wrapper">
+    
+    <!-- Top Header -->
+    <header class="top-header">
+      <div class="header-left">
+        <button class="sidebar-toggle" id="sidebarToggle" aria-label="사이드바 토글">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
+        <div class="header-title">
+          <span class="header-project">LAH 임무 경로계획 AI 학습 프레임워크</span>
+          <span class="header-breadcrumb" id="headerBreadcrumb">표지</span>
+        </div>
+      </div>
+      <div class="header-right">
+        <div class="header-stats">
+          <div class="stat-chip">
+            <span class="stat-label">환경</span>
+            <span class="stat-value" id="envStatus">미초기화</span>
+          </div>
+          <div class="stat-chip">
+            <span class="stat-label">모델</span>
+            <span class="stat-value" id="modelStatus">없음</span>
+          </div>
+          <div class="stat-chip">
+            <span class="stat-label">타임스텝</span>
+            <span class="stat-value mono" id="timestepStatus">0</span>
+          </div>
+        </div>
+        <div class="header-time mono" id="headerTime">00:00:00</div>
+      </div>
+    </header>
+
+    <!-- Tab Content -->
+    <main class="content-area">
+
+      <!-- Tab 0: Cover -->
+      <section class="tab-panel active" id="tab-0">
+        <div id="cover-container"></div>
+      </section>
+
+      <!-- Tab 1: Environment Config -->
+      <section class="tab-panel" id="tab-1">
+        <div id="environment-container"></div>
+      </section>
+
+      <!-- Tab 2: Training -->
+      <section class="tab-panel" id="tab-2">
+        <div id="training-container"></div>
+      </section>
+
+      <!-- Tab 3: Simulation -->
+      <section class="tab-panel" id="tab-3">
+        <div id="simulation-container"></div>
+      </section>
+
+      <!-- Tab 4: 3D Visualization -->
+      <section class="tab-panel" id="tab-4">
+        <div id="viz3d-container"></div>
+      </section>
+
+      <!-- Tab 5: Validation -->
+      <section class="tab-panel" id="tab-5">
+        <div id="validation-container"></div>
+      </section>
+
+      <!-- Tab 6: Model Comparison -->
+      <section class="tab-panel" id="tab-6">
+        <div id="comparison-container"></div>
+      </section>
+
+    </main>
+
+    <!-- Bottom Status Bar -->
+    <footer class="status-bar">
+      <div class="status-left">
+        <span class="status-item">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+          <span id="statusEnv">환경: 미초기화</span>
+        </span>
+        <span class="status-divider">|</span>
+        <span class="status-item">
+          <span id="statusModel">모델: 없음</span>
+        </span>
+        <span class="status-divider">|</span>
+        <span class="status-item">
+          <span id="statusMode">모드: 데모</span>
+        </span>
+      </div>
+      <div class="status-right">
+        <a href="https://www.perplexity.ai/computer" target="_blank" rel="noopener noreferrer" class="pplx-credit">
+          Created with Perplexity Computer
+        </a>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- Scripts -->
+<script src="js/utils.js"></script>
+<script src="js/app.js"></script>
+<script src="js/cover.js"></script>
+<script src="js/environment.js"></script>
+<script src="js/training.js"></script>
+<script src="js/simulation.js"></script>
+<script src="js/visualization3d.js"></script>
+<script src="js/validation.js"></script>
+
+<script>
+// Boot sequence
+window.addEventListener('load', () => {
+  // Immediate show for screenshot/testing
+  const showApp = () => {
+    document.getElementById('loading-screen').style.display = 'none';
+    const app = document.getElementById('app');
+    app.style.display = 'flex';
+    app.style.opacity = '1';
+    if (window.LAHApp) window.LAHApp.init();
+  };
+
+  // Show after brief animation (500ms)
+  setTimeout(showApp, 500);
+});
+</script>
+
+</body>
+</html>
