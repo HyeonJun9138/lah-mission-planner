@@ -83,8 +83,15 @@ def kinematic_step(
         new_hold_timer = 0.0
 
     # --- 기수각 업데이트 ---
-    yaw_rate = a_yaw * cfg["max_turn_rad"]
-    new_psi = state.psi + yaw_rate * dt
+    max_turn = cfg["max_turn_rad"]
+    yaw_rate = a_yaw * max_turn
+    # 선회율 이중 클리핑: 방지 선회율 초과 경고
+    yaw_rate = float(np.clip(yaw_rate, -max_turn, max_turn))
+    delta_psi = yaw_rate * dt
+    # heading 변화량도 클리핑 (dt가 클 때 과도한 변화 방지)
+    max_delta_psi = max_turn * dt
+    delta_psi = float(np.clip(delta_psi, -max_delta_psi, max_delta_psi))
+    new_psi = state.psi + delta_psi
     # 각도 래핑 (-pi ~ pi)
     new_psi = float((new_psi + np.pi) % (2 * np.pi) - np.pi)
 

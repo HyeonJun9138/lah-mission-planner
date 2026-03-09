@@ -214,6 +214,9 @@ def compute_reward_breakdown(
         + r_hold + r_hold_good
     )
 
+    # 스텝 보상 클리핑 — 스파이크 방지 (terminal reward는 env에서 별도 추가)
+    total = float(np.clip(total, -10.0, 10.0))
+
     return {
         "progress": float(r_prog),
         "goal": float(r_goal),

@@ -241,6 +241,17 @@ class EnvironmentValidator:
                 result["status"] = "pass"
                 result["message"] = "보상 함수 검증 통과"
 
+            # 보상 스파이크 검사: IQR 기반 이상치 탐지
+            q1, q3 = float(np.percentile(rewards_arr, 25)), float(np.percentile(rewards_arr, 75))
+            iqr = q3 - q1
+            spike_threshold = max(3.0 * iqr, 5.0)  # IQR의 3배 또는 절대값 5 중 큰 값
+            n_spikes = int(np.sum(np.abs(rewards_arr - np.median(rewards_arr)) > spike_threshold))
+            spike_ratio = n_spikes / max(len(rewards_arr), 1)
+
+            if spike_ratio > 0.05:
+                result["status"] = "warning"
+                result["message"] += f" — 경고: 보상 스파이크 {n_spikes}회 감지 ({spike_ratio:.1%})"
+
             result["details"] = {
                 "n_steps": n_steps,
                 "mean": mean_r,
@@ -248,6 +259,8 @@ class EnvironmentValidator:
                 "min": min_r,
                 "max": max_r,
                 "finite_ratio": finite_ratio,
+                "spike_count": n_spikes,
+                "spike_threshold": spike_threshold,
             }
 
         except Exception as e:
@@ -361,7 +374,10 @@ class EnvironmentValidator:
 
             positions = [(init_x, init_y)]
             speeds = []
+            headings = [float(env.state.psi)]
+            turn_rates = []
             states_valid = True
+            max_turn_limit = np.radians(env.config.get("max_turn_deg_s", 12.0))
 
             for i in range(n_steps):
                 obs, reward, terminated, truncated, info = env.step(forward_action)
@@ -371,6 +387,7 @@ class EnvironmentValidator:
                 x = float(env.state.x)
                 y = float(env.state.y)
                 v = float(env.state.v)
+                psi = float(env.state.psi)
 
                 if not (np.isfinite(x) and np.isfinite(y) and np.isfinite(v)):
                     states_valid = False
@@ -378,6 +395,16 @@ class EnvironmentValidator:
 
                 positions.append((x, y))
                 speeds.append(v)
+
+                # 선회율 계산 (heading 변화량 / dt)
+                if headings:
+                    delta_psi = psi - headings[-1]
+                    # 각도 래핑
+                    delta_psi = float((delta_psi + np.pi) % (2 * np.pi) - np.pi)
+                    dt = env.config.get("dt", 1.0)
+                    actual_rate = abs(delta_psi) / max(dt, 0.01)
+                    turn_rates.append(actual_rate)
+                headings.append(psi)
 
             if not states_valid:
                 result["status"] = "fail"
@@ -393,9 +420,27 @@ class EnvironmentValidator:
             else:
                 dist_moved = 0.0
 
+            # 선회율 초과 확인
+            turn_violations = 0
+            max_actual_rate = 0.0
+            if turn_rates:
+                turn_arr = np.array(turn_rates)
+                max_actual_rate = float(np.max(turn_arr))
+                turn_violations = int(np.sum(turn_arr > max_turn_limit * 1.05))  # 5% 여유
+
+            warnings = []
             if dist_moved < 1.0:
+                warnings.append(f"전진 액션 후 이동 거리 너무 작음: {dist_moved:.1f}m")
+            if turn_violations > 0:
+                warnings.append(
+                    f"선회율 초과 {turn_violations}회 감지 "
+                    f"(최대 {np.degrees(max_actual_rate):.1f}deg/s, "
+                    f"한계 {np.degrees(max_turn_limit):.1f}deg/s)"
+                )
+
+            if warnings:
                 result["status"] = "warning"
-                result["message"] = f"전진 액션 후 이동 거리 너무 작음: {dist_moved:.1f}m"
+                result["message"] = f"동역학 대부분 정상 — 경고: {'; '.join(warnings)}"
             else:
                 result["status"] = "pass"
                 result["message"] = "운동학 검증 통과"
@@ -405,6 +450,9 @@ class EnvironmentValidator:
                 "n_steps": len(positions) - 1,
                 "mean_speed": float(np.mean(speeds)) if speeds else 0.0,
                 "max_speed": float(np.max(speeds)) if speeds else 0.0,
+                "max_turn_rate_deg": float(np.degrees(max_actual_rate)) if max_actual_rate else 0.0,
+                "turn_limit_deg": float(np.degrees(max_turn_limit)),
+                "turn_violations": turn_violations,
             }
 
         except Exception as e:

@@ -166,16 +166,32 @@ def get_terminal_reward(info: Dict[str, Any]) -> float:
     """
     reason = info.get("reason", "running")
 
+    # terminal reward를 적절한 범위로 조정 (스텝 보상 ≈ [-10,10] 대비)
+    # 너무 크면 스파이크가 되어 학습 불안정 유발
     reward_map = {
-        "goal_reached": 150.0,
-        "terrain_collision": -150.0,
-        "hard_corridor_exit": -100.0,
-        "out_of_bounds": -100.0,
-        "invalid_state": -100.0,
-        "max_steps": -30.0,
+        "goal_reached": 50.0,
+        "terrain_collision": -50.0,
+        "hard_corridor_exit": -30.0,
+        "out_of_bounds": -30.0,
+        "invalid_state": -30.0,
+        "max_steps": -10.0,
         "running": 0.0,
     }
-    return float(reward_map.get(reason, 0.0))
+
+    base_reward = float(reward_map.get(reason, 0.0))
+
+    # 성공 시 진행률에 비례한 보너스 (빠른 성공일수록 큰 보상)
+    if reason == "goal_reached":
+        step = info.get("step", 0)
+        speed_bonus = max(0.0, 1.0 - step / 1000.0) * 20.0
+        base_reward += speed_bonus
+
+    # 충돌 시 잔여 거리에 비례한 패널티 완화 (거의 도착했으면 덜 벌)
+    elif reason in ("terrain_collision", "hard_corridor_exit"):
+        s_ratio = info.get("s_ratio", 0.0) if "s_ratio" in info else 0.0
+        base_reward *= (1.0 - 0.3 * s_ratio)
+
+    return float(np.clip(base_reward, -50.0, 70.0))
 
 
 def _resolve_config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
