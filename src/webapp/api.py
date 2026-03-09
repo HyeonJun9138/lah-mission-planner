@@ -23,6 +23,7 @@ from typing import Dict, Any, List, Optional
 import numpy as np
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -58,6 +59,46 @@ app.add_middleware(
 static_dir = Path(__file__).parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def root():
+    """웹 프론트엔드 진입점을 정적 index로 연결."""
+    return RedirectResponse(url="/static/index.html")
+
+
+@app.get("/api/health")
+async def health() -> Dict[str, Any]:
+    return {
+        "status": "ok",
+        "version": "1.0.0",
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+@app.get("/api/system/compute")
+async def system_compute() -> Dict[str, Any]:
+    from src.train.trainer import probe_compute_runtime
+
+    payload = probe_compute_runtime()
+    payload.update(
+        {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "env_ready": _env is not None,
+            "trainer": None,
+        }
+    )
+
+    if _trainer is not None:
+        try:
+            payload["trainer"] = _trainer.get_runtime_info()
+        except Exception as exc:
+            payload["trainer"] = {
+                "algo": getattr(_trainer, "algo", None),
+                "error": str(exc),
+            }
+
+    return payload
 
 # ------------------------------------------------------------------
 # 전역 상태 관리

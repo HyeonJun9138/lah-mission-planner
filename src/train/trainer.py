@@ -21,6 +21,98 @@ import gymnasium as gym
 logger = logging.getLogger(__name__)
 
 
+def probe_compute_runtime() -> Dict[str, Any]:
+    """Return torch/CUDA/NVIDIA runtime info without raising."""
+    runtime: Dict[str, Any] = {
+        "torch_available": False,
+        "torch_version": None,
+        "torch_import_error": None,
+        "cuda_available": False,
+        "cuda_version": None,
+        "device_count": 0,
+        "devices": [],
+        "nvidia_smi": {
+            "available": False,
+            "gpus": [],
+            "error": None,
+        },
+    }
+
+    try:
+        import torch
+
+        runtime["torch_available"] = True
+        runtime["torch_version"] = getattr(torch, "__version__", None)
+        runtime["cuda_version"] = getattr(torch.version, "cuda", None)
+        runtime["cuda_available"] = bool(torch.cuda.is_available())
+        runtime["device_count"] = int(torch.cuda.device_count()) if runtime["cuda_available"] else 0
+
+        devices = []
+        for idx in range(runtime["device_count"]):
+            props = torch.cuda.get_device_properties(idx)
+            devices.append(
+                {
+                    "index": idx,
+                    "name": props.name,
+                    "total_memory_mb": int(props.total_memory / (1024 * 1024)),
+                    "capability": f"{props.major}.{props.minor}",
+                }
+            )
+        runtime["devices"] = devices
+    except Exception as exc:
+        runtime["torch_import_error"] = str(exc)
+
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            gpus = []
+            for line in result.stdout.splitlines():
+                parts = [part.strip() for part in line.split(",")]
+                if len(parts) < 6:
+                    continue
+                gpus.append(
+                    {
+                        "index": int(parts[0]),
+                        "name": parts[1],
+                        "utilization_gpu": int(parts[2]),
+                        "memory_used_mb": int(parts[3]),
+                        "memory_total_mb": int(parts[4]),
+                        "temperature_c": int(parts[5]),
+                    }
+                )
+            runtime["nvidia_smi"] = {
+                "available": True,
+                "gpus": gpus,
+                "error": None,
+            }
+        else:
+            runtime["nvidia_smi"] = {
+                "available": False,
+                "gpus": [],
+                "error": (result.stderr or result.stdout or f"exit {result.returncode}").strip(),
+            }
+    except Exception as exc:
+        runtime["nvidia_smi"] = {
+            "available": False,
+            "gpus": [],
+            "error": str(exc),
+        }
+
+    return runtime
+
+
 class LAHTrainer:
     """
     LAH 환경용 강화학습 트레이너.
@@ -49,6 +141,7 @@ class LAHTrainer:
         "vf_coef": 0.5,
         "max_grad_norm": 0.5,
         "verbose": 1,
+        "device": "auto",
         "policy": "MultiInputPolicy",
     }
 
@@ -63,6 +156,7 @@ class LAHTrainer:
         "gradient_steps": 1,
         "ent_coef": "auto",
         "verbose": 1,
+        "device": "auto",
         "policy": "MultiInputPolicy",
     }
 
@@ -102,6 +196,8 @@ class LAHTrainer:
         self._env: Optional[gym.Env] = None
         self._is_training: bool = False
         self._total_timesteps_trained: int = 0
+        self.device_request: str = str(self.train_config.get("device", "auto"))
+        self.last_runtime_info: Dict[str, Any] = probe_compute_runtime()
 
     # ------------------------------------------------------------------
     # 환경 생성
@@ -149,6 +245,7 @@ class LAHTrainer:
             self.model = self._create_model(self._env)
 
         self._is_training = True
+        self.last_runtime_info = self.get_runtime_info()
         logger.info(f"[LAHTrainer] {self.algo} 학습 시작: {total_timesteps:,} 스텝")
 
         # 학습 로그 콜백
@@ -171,6 +268,7 @@ class LAHTrainer:
             raise
         finally:
             self._is_training = False
+            self.last_runtime_info = self.get_runtime_info()
 
         logger.info(f"[LAHTrainer] 학습 완료. 총 학습 스텝: {self._total_timesteps_trained:,}")
         return self.model
@@ -206,29 +304,37 @@ class LAHTrainer:
         """
         policy = self.train_config.pop("policy", "MultiInputPolicy")
         verbose = self.train_config.get("verbose", 1)
+        device = str(self.train_config.get("device", "auto"))
+        self.device_request = device
 
         if self.algo == "PPO":
             from stable_baselines3 import PPO
             ppo_kwargs = {k: v for k, v in self.train_config.items()
-                         if k not in ("verbose",)}
-            return PPO(
+                         if k not in ("verbose", "device")}
+            model = PPO(
                 policy=policy,
                 env=env,
                 verbose=verbose,
+                device=device,
                 tensorboard_log=str(self.log_dir / "tb"),
                 **ppo_kwargs,
             )
+            self.last_runtime_info = self.get_runtime_info(model=model)
+            return model
         elif self.algo == "SAC":
             from stable_baselines3 import SAC
             sac_kwargs = {k: v for k, v in self.train_config.items()
-                         if k not in ("verbose",)}
-            return SAC(
+                         if k not in ("verbose", "device")}
+            model = SAC(
                 policy=policy,
                 env=env,
                 verbose=verbose,
+                device=device,
                 tensorboard_log=str(self.log_dir / "tb"),
                 **sac_kwargs,
             )
+            self.last_runtime_info = self.get_runtime_info(model=model)
+            return model
         raise ValueError(f"지원하지 않는 알고리즘: {self.algo}")
 
     # ------------------------------------------------------------------
@@ -349,6 +455,7 @@ class LAHTrainer:
             raise ValueError(f"지원하지 않는 알고리즘: {self.algo}")
 
         self._env = env
+        self.last_runtime_info = self.get_runtime_info()
         logger.info(f"[LAHTrainer] 모델 로드 완료: {path}")
         return self.model
 
@@ -364,6 +471,23 @@ class LAHTrainer:
             [{"timestep": ..., "reward": ..., "success_rate": ...}, ...]
         """
         return self.training_log.copy()
+
+    def get_runtime_info(self, model: Optional[Any] = None) -> Dict[str, Any]:
+        """Return trainer + compute runtime info for frontend monitoring."""
+        runtime = probe_compute_runtime()
+        active_model = model or self.model
+        runtime.update(
+            {
+                "algo": self.algo,
+                "device_request": self.device_request,
+                "model_device": str(getattr(active_model, "device", None)) if active_model is not None else None,
+                "is_training": self._is_training,
+                "total_timesteps_trained": self._total_timesteps_trained,
+                "log_entries": len(self.training_log),
+            }
+        )
+        self.last_runtime_info = runtime
+        return runtime
 
     def _make_log_callback(self, eval_freq: int, n_eval_episodes: int) -> Any:
         """
