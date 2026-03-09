@@ -1,6 +1,6 @@
 /**
  * environment.js — LAH Mission Planner 환경 설정 탭 (탭 1)
- * 지형 설정, Ref Path, Corridor, 비행체, 보상 가중치
+ * 지형 설정(합성/DEM), Ref Path, Corridor, 비행체, 보상 가중치
  */
 
 'use strict';
@@ -10,9 +10,14 @@ window.LAHEnvironment = (() => {
   let initialized = false;
   let canvas2D = null;
   let ctx2D = null;
-  let terrainData = null;
+  let terrainData = null;          // 합성 terrain float array
+  let terrainMeta = null;          // DEM terrain metadata from API
   let refPath = [];
   let animFrame = null;
+  let availableDems = [];          // DEM 파일 목록
+  let coordMode = 'local';         // 'local' | 'latlon'
+  let showRiskGlobal = true;
+  let showCorridorGlobal = true;
 
   // ── Activate ──
   function activate() {
@@ -56,27 +61,80 @@ window.LAHEnvironment = (() => {
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">맵 크기 (m)</label>
-              <div class="slider-row">
-                <input type="range" id="mapSizeSlider" min="5000" max="50000" step="1000" value="20000" data-display="mapSizeVal">
-                <span class="slider-value" id="mapSizeVal">20000</span>
+            <!-- 합성 지형 설정 -->
+            <div id="synthTerrainSettings">
+              <div class="form-group">
+                <label class="form-label">맵 크기 (m)</label>
+                <div class="slider-row">
+                  <input type="range" id="mapSizeSlider" min="5000" max="50000" step="1000" value="20000" data-display="mapSizeVal">
+                  <span class="slider-value" id="mapSizeVal">20000</span>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">해상도 (m/px)</label>
+                <div class="slider-row">
+                  <input type="range" id="resolutionSlider" min="10" max="100" step="5" value="30" data-display="resolutionVal">
+                  <span class="slider-value" id="resolutionVal">30</span>
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">지형 복잡도</label>
+                <div class="slider-row">
+                  <input type="range" id="complexitySlider" min="10" max="200" step="5" value="100" data-display="complexityVal">
+                  <span class="slider-value" id="complexityVal" style="min-width:40px">1.00</span>
+                </div>
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">해상도 (m/px)</label>
-              <div class="slider-row">
-                <input type="range" id="resolutionSlider" min="10" max="100" step="5" value="30" data-display="resolutionVal">
-                <span class="slider-value" id="resolutionVal">30</span>
+            <!-- DEM 지형 설정 -->
+            <div id="demTerrainSettings" style="display:none">
+              <div class="form-group">
+                <label class="form-label">DEM 프리셋</label>
+                <div style="display:flex;gap:4px;flex-wrap:wrap">
+                  <button class="btn btn-secondary btn-sm" id="demPresetHongik">홍익</button>
+                  <button class="btn btn-secondary btn-sm" id="demPresetInje">인제</button>
+                  <button class="btn btn-secondary btn-sm" id="demPresetJipo">지포</button>
+                </div>
               </div>
+
+              <div class="form-group">
+                <label class="form-label">DEM 파일</label>
+                <select class="input input-sm" id="demFileSelect" style="width:100%">
+                  <option value="">-- 로딩 중... --</option>
+                </select>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">영역 중심 (lat, lon)</label>
+                <div style="display:flex;gap:4px">
+                  <input type="number" class="input input-sm mono" id="demCenterLat" placeholder="위도" step="0.01" style="flex:1">
+                  <input type="number" class="input input-sm mono" id="demCenterLon" placeholder="경도" step="0.01" style="flex:1">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">DEM 크기 (km)</label>
+                <div class="slider-row">
+                  <input type="range" id="demSizeSlider" min="5" max="100" step="5" value="20" data-display="demSizeVal">
+                  <span class="slider-value" id="demSizeVal">20</span>
+                </div>
+              </div>
+
+              <div id="demMetaInfo" style="font-size:11px;color:var(--text-muted);margin-top:4px"></div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">지형 복잡도</label>
-              <div class="slider-row">
-                <input type="range" id="complexitySlider" min="10" max="200" step="5" value="100" data-display="complexityVal">
-                <span class="slider-value" id="complexityVal" style="min-width:40px">1.00</span>
+            <!-- 좌표 입력 모드 토글 -->
+            <div class="form-group" style="margin-top:8px">
+              <label class="form-label">웨이포인트 좌표 모드</label>
+              <div class="radio-group" id="coordModeGroup">
+                <label class="radio-btn active" id="coordModeLocalBtn">
+                  <input type="radio" name="coordMode" value="local" checked> 로컈 (m)
+                </label>
+                <label class="radio-btn" id="coordModeLatLonBtn">
+                  <input type="radio" name="coordMode" value="latlon"> WGS84 (lat/lon)
+                </label>
               </div>
             </div>
           </div>
@@ -85,21 +143,45 @@ window.LAHEnvironment = (() => {
           <div class="form-section">
             <div class="form-section-title">Ref Path 설정</div>
 
-            <div class="form-group">
-              <label class="form-label">시작점 (x, y, z)</label>
-              <div class="grid-3" style="gap:var(--space-2)">
-                <input type="number" class="input input-sm mono" id="startX" value="1000" placeholder="X">
-                <input type="number" class="input input-sm mono" id="startY" value="1000" placeholder="Y">
-                <input type="number" class="input input-sm mono" id="startZ" value="400" placeholder="Z">
+            <!-- 로컈 모드 (m) -->
+            <div id="waypointLocalMode">
+              <div class="form-group">
+                <label class="form-label">시작점 (x, y, z) [m]</label>
+                <div class="grid-3" style="gap:var(--space-2)">
+                  <input type="number" class="input input-sm mono" id="startX" value="1000" placeholder="X">
+                  <input type="number" class="input input-sm mono" id="startY" value="1000" placeholder="Y">
+                  <input type="number" class="input input-sm mono" id="startZ" value="400" placeholder="Z">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">끝점 (x, y, z) [m]</label>
+                <div class="grid-3" style="gap:var(--space-2)">
+                  <input type="number" class="input input-sm mono" id="endX" value="19000" placeholder="X">
+                  <input type="number" class="input input-sm mono" id="endY" value="19000" placeholder="Y">
+                  <input type="number" class="input input-sm mono" id="endZ" value="400" placeholder="Z">
+                </div>
               </div>
             </div>
 
-            <div class="form-group">
-              <label class="form-label">끝점 (x, y, z)</label>
-              <div class="grid-3" style="gap:var(--space-2)">
-                <input type="number" class="input input-sm mono" id="endX" value="19000" placeholder="X">
-                <input type="number" class="input input-sm mono" id="endY" value="19000" placeholder="Y">
-                <input type="number" class="input input-sm mono" id="endZ" value="400" placeholder="Z">
+            <!-- WGS84 모드 (lat/lon) -->
+            <div id="waypointLatLonMode" style="display:none">
+              <div class="form-group">
+                <label class="form-label">시작점 (lat, lon, alt[m])</label>
+                <div class="grid-3" style="gap:var(--space-2)">
+                  <input type="number" class="input input-sm mono" id="startLat" placeholder="위도" step="0.0001">
+                  <input type="number" class="input input-sm mono" id="startLon" placeholder="경도" step="0.0001">
+                  <input type="number" class="input input-sm mono" id="startAlt" placeholder="고도" value="400">
+                </div>
+              </div>
+
+              <div class="form-group">
+                <label class="form-label">끝점 (lat, lon, alt[m])</label>
+                <div class="grid-3" style="gap:var(--space-2)">
+                  <input type="number" class="input input-sm mono" id="endLat" placeholder="위도" step="0.0001">
+                  <input type="number" class="input input-sm mono" id="endLon" placeholder="경도" step="0.0001">
+                  <input type="number" class="input input-sm mono" id="endAlt" placeholder="고도" value="400">
+                </div>
               </div>
             </div>
 
@@ -252,10 +334,10 @@ window.LAHEnvironment = (() => {
     // Terrain type toggle
     document.querySelectorAll('input[name="terrainType"]').forEach(r => {
       r.addEventListener('change', () => {
-        document.querySelectorAll('[id$="Btn"].radio-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.radio-btn').forEach(b => b.classList.remove('active'));
         const parent = r.closest('.radio-btn');
         if (parent) parent.classList.add('active');
-        generateTerrain();
+        onTerrainTypeChange(r.value);
       });
     });
 
@@ -267,7 +349,31 @@ window.LAHEnvironment = (() => {
 
     ['softCorridorSlider', 'hardCorridorSlider'].forEach(id => {
       const el = document.getElementById(id);
-      if (el) el.addEventListener('input', () => drawPreview());
+      if (el) el.addEventListener('input', () => drawPreview(showRiskGlobal, showCorridorGlobal));
+    });
+
+    // DEM 파일 선택시 메타 표시
+    document.getElementById('demFileSelect')?.addEventListener('change', onDemFileSelect);
+
+    // DEM 크기 슬라이더
+    document.getElementById('demSizeSlider')?.addEventListener('input', U.debounce(() => {
+      drawPreview(showRiskGlobal, showCorridorGlobal);
+    }, 300));
+
+    // DEM 프리셋 버튼
+    document.getElementById('demPresetHongik')?.addEventListener('click', () => applyDemPreset('Hongik_48km'));
+    document.getElementById('demPresetInje')?.addEventListener('click', () => applyDemPreset('Inje_48km'));
+    document.getElementById('demPresetJipo')?.addEventListener('click', () => applyDemPreset('Jipo_48km'));
+
+    // 좌표 모드 토글
+    document.querySelectorAll('input[name="coordMode"]').forEach(r => {
+      r.addEventListener('change', () => {
+        document.querySelectorAll('#coordModeGroup .radio-btn').forEach(b => b.classList.remove('active'));
+        const parent = r.closest('.radio-btn');
+        if (parent) parent.classList.add('active');
+        coordMode = r.value;
+        onCoordModeChange(r.value);
+      });
     });
 
     // Add waypoint
@@ -285,19 +391,101 @@ window.LAHEnvironment = (() => {
     // Reset
     document.getElementById('resetConfigBtn')?.addEventListener('click', () => {
       U.toast('설정이 기본값으로 초기화되었습니다.', 'info');
+      terrainMeta = null;
       render();
     });
 
     // Toggles
-    let showRisk = true, showCorridor = true;
     document.getElementById('toggleRiskBtn')?.addEventListener('click', () => {
-      showRisk = !showRisk;
-      drawPreview(showRisk, showCorridor);
+      showRiskGlobal = !showRiskGlobal;
+      drawPreview(showRiskGlobal, showCorridorGlobal);
     });
     document.getElementById('toggleCorridorBtn')?.addEventListener('click', () => {
-      showCorridor = !showCorridor;
-      drawPreview(showRisk, showCorridor);
+      showCorridorGlobal = !showCorridorGlobal;
+      drawPreview(showRiskGlobal, showCorridorGlobal);
     });
+
+    // DEM 목록 로드
+    loadDemList();
+  }
+
+  // ── Terrain Type Change ──
+  function onTerrainTypeChange(type) {
+    const synthDiv = document.getElementById('synthTerrainSettings');
+    const demDiv   = document.getElementById('demTerrainSettings');
+    if (synthDiv) synthDiv.style.display = type === 'synthetic' ? '' : 'none';
+    if (demDiv)   demDiv.style.display   = type === 'dem'       ? '' : 'none';
+    if (type === 'dem') {
+      loadDemList();
+    } else {
+      generateTerrain();
+    }
+  }
+
+  // ── Coord Mode Change ──
+  function onCoordModeChange(mode) {
+    const localDiv  = document.getElementById('waypointLocalMode');
+    const latLonDiv = document.getElementById('waypointLatLonMode');
+    if (localDiv)  localDiv.style.display  = mode === 'local'  ? '' : 'none';
+    if (latLonDiv) latLonDiv.style.display = mode === 'latlon' ? '' : 'none';
+  }
+
+  // ── DEM List Loader ──
+  async function loadDemList() {
+    const { data, error } = await U.apiCall('/terrain/dem/list');
+    if (error || !data) return;
+
+    availableDems = data.dems || [];
+    const sel = document.getElementById('demFileSelect');
+    if (!sel) return;
+
+    sel.innerHTML = '<option value="">개요 전용</option>';
+    availableDems.forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.path;
+      const typeLabel = d.type === 'srtm_1arc' ? 'SRTM' : 'UTM48km';
+      opt.textContent = `${d.name} [${typeLabel}, ${d.resolution_m}m, 엘브: ${d.elev_min}~${d.elev_max}m]`;
+      sel.appendChild(opt);
+    });
+  }
+
+  // ── DEM File Select Handler ──
+  function onDemFileSelect() {
+    const sel = document.getElementById('demFileSelect');
+    if (!sel || !sel.value) return;
+    const info = availableDems.find(d => d.path === sel.value);
+    const metaEl = document.getElementById('demMetaInfo');
+    if (!metaEl) return;
+    if (!info) { metaEl.textContent = ''; return; }
+    metaEl.innerHTML = [
+      `분해능: ${info.resolution_m}m`,
+      `크기: ${info.shape[0]}x${info.shape[1]} px`,
+      `고도: ${info.elev_min}~${info.elev_max}m`,
+      `CRS: ${info.crs}`,
+    ].join(' &nbsp;|  ');
+  }
+
+  // ── DEM Preset ──
+  function applyDemPreset(name) {
+    const sel = document.getElementById('demFileSelect');
+    if (!sel) return;
+    const match = availableDems.find(d => d.name === name);
+    if (match) {
+      sel.value = match.path;
+      onDemFileSelect();
+      U.toast(`${name} 선택됨`, 'info');
+    } else {
+      // 사용 가능한 DEM에 없으면 이름으로 비주얼 매칭 시도
+      for (let opt of sel.options) {
+        if (opt.text.includes(name)) {
+          sel.value = opt.value;
+          onDemFileSelect();
+          U.toast(`${name} 선택됨`, 'info');
+          return;
+        }
+      }
+      U.toast(`${name} 파일을 찾을 수 없습니다.`, 'warn');
+    }
   }
 
   // ── Bind Sliders ──
@@ -334,47 +522,109 @@ window.LAHEnvironment = (() => {
 
     // Mouse coordinate display
     canvas2D.addEventListener('mousemove', e => {
-      if (!terrainData) return;
       const rect = canvas2D.getBoundingClientRect();
       const px = (e.clientX - rect.left) / rect.width;
       const py = (e.clientY - rect.top) / rect.height;
-      const mapSize = parseInt(document.getElementById('mapSizeSlider')?.value || 20000);
-      const wx = Math.round(px * mapSize);
-      const wy = Math.round(py * mapSize);
-      canvas2D.title = `X: ${wx}m, Y: ${wy}m`;
+
+      if (terrainMeta && terrainMeta.world_extent) {
+        // DEM 모드: 로컈 좌표 + lat/lon 병렴 표시
+        const ext = terrainMeta.world_extent; // [xmin, xmax, ymin, ymax]
+        const wx = Math.round(ext[0] + px * (ext[1] - ext[0]));
+        const wy = Math.round(ext[2] + (1 - py) * (ext[3] - ext[2]));
+        if (terrainMeta.crs && terrainMeta.crs.includes('32652') && terrainMeta.origin_utm) {
+          const utmX = terrainMeta.origin_utm[0] + wx;
+          const utmY = terrainMeta.origin_utm[1] + wy;
+          const ll = U.coordConvert(0, 0, false, utmX, utmY);
+          canvas2D.title = `X: ${wx}m, Y: ${wy}m | lat: ${ll.lat.toFixed(5)}, lon: ${ll.lon.toFixed(5)}`;
+        } else {
+          canvas2D.title = `X: ${wx}m, Y: ${wy}m`;
+        }
+      } else {
+        const mapSize = parseInt(document.getElementById('mapSizeSlider')?.value || 20000);
+        const wx = Math.round(px * mapSize);
+        const wy = Math.round(py * mapSize);
+        canvas2D.title = `X: ${wx}m, Y: ${wy}m`;
+      }
     });
   }
 
   // ── Terrain Generation ──
   function generateTerrain() {
-    const complexity = (parseFloat(document.getElementById('complexitySlider')?.value || 100)) / 100;
-    const w = 200, h = 200;
-    terrainData = U.generateSyntheticTerrain(w, h, complexity);
-    drawPreview();
-    renderCrossSection();
+    const type = document.querySelector('input[name="terrainType"]:checked')?.value || 'synthetic';
+    if (type === 'dem') {
+      // DEM 모드에서는 서버 에서 데이터를 받아와 표시하므로 클라이언트 합성 괴늘리합니다.
+      // 서버에서 받은 한초 데이터를 사용 (있으면)
+      if (!terrainData && !terrainMeta) {
+        // DEM 데이터 없음: 늘리 'DEM 초기화' 단추 표시
+        drawPlaceholder();
+        return;
+      }
+      drawPreview(showRiskGlobal, showCorridorGlobal);
+    } else {
+      const complexity = (parseFloat(document.getElementById('complexitySlider')?.value || 100)) / 100;
+      const w = 200, h = 200;
+      terrainData = U.generateSyntheticTerrain(w, h, complexity);
+      terrainMeta = null;
+      drawPreview(showRiskGlobal, showCorridorGlobal);
+      renderCrossSection();
+    }
+  }
+
+  // ── DEM 프리뷷 컜네버스 그리기 ──
+  function drawPlaceholder() {
+    if (!canvas2D || !ctx2D) return;
+    const cw = canvas2D.width, ch = canvas2D.height;
+    ctx2D.clearRect(0, 0, cw, ch);
+    ctx2D.fillStyle = '#0a0f1a';
+    ctx2D.fillRect(0, 0, cw, ch);
+    ctx2D.fillStyle = '#475569';
+    ctx2D.font = '13px monospace';
+    ctx2D.textAlign = 'center';
+    ctx2D.fillText('DEM 모드: 아래 "환경 초기화" 버튼을 눌러 DEM을 로드하세요.', cw / 2, ch / 2);
+    ctx2D.textAlign = 'start';
   }
 
   // ── Draw 2D Preview ──
   function drawPreview(showRisk = true, showCorridor = true) {
-    if (!canvas2D || !ctx2D || !terrainData) return;
+    if (!canvas2D || !ctx2D) return;
+
+    // DEM 모드: terrainMeta의 heightmap_preview 사용
+    let renderData = terrainData;
+    let renderW = 200, renderH = 200;
+    if (terrainMeta && terrainMeta._heightmapPreview) {
+      renderData = terrainMeta._heightmapPreview;
+      renderW = terrainMeta._previewW;
+      renderH = terrainMeta._previewH;
+    }
+
+    if (!renderData) {
+      drawPlaceholder();
+      return;
+    }
 
     const cw = canvas2D.width, ch = canvas2D.height;
-    const w = 200, h = 200;
+    const w = renderW, h = renderH;
     ctx2D.clearRect(0, 0, cw, ch);
 
     // Find min/max elevation
     let minH = Infinity, maxH = -Infinity;
-    for (let i = 0; i < terrainData.length; i++) {
-      if (terrainData[i] < minH) minH = terrainData[i];
-      if (terrainData[i] > maxH) maxH = terrainData[i];
+    for (let row = 0; row < h; row++) {
+      for (let col = 0; col < w; col++) {
+        const v = Array.isArray(renderData[0]) ? renderData[row][col] : renderData[row * w + col];
+        if (v < minH) minH = v;
+        if (v > maxH) maxH = v;
+      }
     }
+
+    // Helper: 로우/콜 인덱스로 값 가져오기
+    const getVal = (row, col) => Array.isArray(renderData[0]) ? renderData[row][col] : renderData[row * w + col];
 
     const cellW = cw / w, cellH = ch / h;
 
     // Draw terrain
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
-        const elev = terrainData[y * w + x];
+        const elev = getVal(y, x);
         const color = U.heightColor(elev, minH, maxH);
         ctx2D.fillStyle = color;
         ctx2D.fillRect(x * cellW, y * cellH, Math.ceil(cellW), Math.ceil(cellH));
@@ -385,19 +635,16 @@ window.LAHEnvironment = (() => {
     if (showRisk) {
       const imgData = ctx2D.getImageData(0, 0, cw, ch);
       // Subtle risk tint on high slopes
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const i = y * w + x;
-          if (x > 0 && y > 0) {
-            const slope = Math.abs(terrainData[i] - terrainData[(y-1)*w + x]) +
-                          Math.abs(terrainData[i] - terrainData[y*w + (x-1)]);
-            if (slope > 15) {
-              const px = Math.round(y * cellH) * cw * 4 + Math.round(x * cellW) * 4;
-              if (px + 3 < imgData.data.length) {
-                imgData.data[px] = Math.min(255, imgData.data[px] + 60);
-                imgData.data[px+1] = Math.max(0, imgData.data[px+1] - 20);
-                imgData.data[px+3] = 200;
-              }
+      for (let y = 1; y < h; y++) {
+        for (let x = 1; x < w; x++) {
+          const slope = Math.abs(getVal(y, x) - getVal(y - 1, x)) +
+                        Math.abs(getVal(y, x) - getVal(y, x - 1));
+          if (slope > 15) {
+            const px = Math.round(y * cellH) * cw * 4 + Math.round(x * cellW) * 4;
+            if (px + 3 < imgData.data.length) {
+              imgData.data[px] = Math.min(255, imgData.data[px] + 60);
+              imgData.data[px + 1] = Math.max(0, imgData.data[px + 1] - 20);
+              imgData.data[px + 3] = 200;
             }
           }
         }
@@ -567,7 +814,7 @@ window.LAHEnvironment = (() => {
   // ── Init Environment ──
   async function initEnv() {
     const btn = document.getElementById('initEnvBtn');
-    if (btn) { btn.disabled = true; btn.textContent = '초기화 중...'; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span style="opacity:.7">환경 초기화 중...</span>'; }
 
     const config = readConfig();
     const { data, error } = await U.apiCall('/env/init', {
@@ -575,45 +822,133 @@ window.LAHEnvironment = (() => {
       body: JSON.stringify(config)
     });
 
-    if (!error && data) {
+    if (!error && data && data.status === 'ok') {
       U.toast('환경이 초기화되었습니다.', 'ok');
-      const state = LAHApp.getState();
-      state.terrain = config;
-      LAHApp.updateStatusBar();
-    } else {
-      // Demo mode — simulate success
-      U.toast('데모 모드: 환경 초기화 시뮬레이션됨', 'info');
-      const appState = LAHApp.getState();
-      appState.terrain = config;
-      LAHApp.updateStatusBar();
+
+      // DEM 클라이언트 상태 업데이트
+      if (data.terrain_meta) {
+        terrainMeta = data.terrain_meta;
+
+        // heightmap_preview 가콓 데이터 저장
+        if (data.heightmap_preview) {
+          const raw = data.heightmap_preview;
+          terrainMeta._heightmapPreview = raw;
+          terrainMeta._previewH = raw.length;
+          terrainMeta._previewW = raw[0] ? raw[0].length : 0;
+          terrainData = null;  // 합성 terrain 데이터 무효화
+        }
+      }
+
+      // 앱 글로벌 상태 업데이트
+      if (window.LAHApp) {
+        const state = LAHApp.getState();
+        state.terrain = { ...config, meta: data.terrain_meta };
+        LAHApp.updateStatusBar();
+      }
+
+      // 캔버스 업데이트
+      drawPreview(showRiskGlobal, showCorridorGlobal);
+
+      // 단면도 업데이트 (DEM ref path 사용 시)
+      if (data.ref_path_pts && data.ref_path_pts.length > 0) {
+        renderCrossSectionFromPath(data.ref_path_pts, data.terrain_meta);
+      } else {
+        renderCrossSection();
+      }
+
+    } else if (error || !data) {
+      // 에러 시: 데모 모드로 줄라가지 않고 메시지 표시
+      U.toast(`환경 초기화 실패: ${error || '알 수 없는 오류'}`, 'error');
     }
 
-    if (btn) { btn.disabled = false; btn.textContent = '환경 초기화'; }
-    generateTerrain();
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+        환경 초기화
+      `;
+    }
   }
 
   // ── Config R/W ──
   function readConfig() {
-    return {
-      terrainType: document.querySelector('input[name="terrainType"]:checked')?.value || 'synthetic',
-      mapSize: parseInt(document.getElementById('mapSizeSlider')?.value || 20000),
-      resolution: parseInt(document.getElementById('resolutionSlider')?.value || 30),
-      complexity: (parseInt(document.getElementById('complexitySlider')?.value || 100)) / 100,
-      startPoint: {
-        x: parseFloat(document.getElementById('startX')?.value || 1000),
-        y: parseFloat(document.getElementById('startY')?.value || 1000),
-        z: parseFloat(document.getElementById('startZ')?.value || 400),
-      },
-      endPoint: {
-        x: parseFloat(document.getElementById('endX')?.value || 19000),
-        y: parseFloat(document.getElementById('endY')?.value || 19000),
-        z: parseFloat(document.getElementById('endZ')?.value || 400),
-      },
-      softCorridor: parseInt(document.getElementById('softCorridorSlider')?.value || 400),
-      hardCorridor: parseInt(document.getElementById('hardCorridorSlider')?.value || 1000),
-      aglSafeMin: parseFloat(document.getElementById('aglSafeMin')?.value || 120),
-      aglPreferred: parseFloat(document.getElementById('aglPreferred')?.value || 180),
+    const terrainType = document.querySelector('input[name="terrainType"]:checked')?.value || 'synthetic';
+    const cm = document.querySelector('input[name="coordMode"]:checked')?.value || 'local';
+
+    const cfg = {
+      terrain_type: terrainType,
+      coord_mode: cm,
+      soft_corridor_m: parseInt(document.getElementById('softCorridorSlider')?.value || 400),
+      hard_corridor_m: parseInt(document.getElementById('hardCorridorSlider')?.value || 1000),
+      agl_safe_min: parseFloat(document.getElementById('aglSafeMin')?.value || 120),
+      agl_pref: parseFloat(document.getElementById('aglPreferred')?.value || 180),
     };
+
+    if (terrainType === 'synthetic') {
+      const mapSize = parseInt(document.getElementById('mapSizeSlider')?.value || 20000);
+      const res = parseInt(document.getElementById('resolutionSlider')?.value || 30);
+      cfg.terrain_size_x = Math.floor(mapSize / res);
+      cfg.terrain_size_y = Math.floor(mapSize / res);
+      cfg.terrain_resolution = res;
+      cfg.terrain_seed = 42;
+    } else {
+      // DEM 설정
+      const demFile = document.getElementById('demFileSelect')?.value || '';
+      if (demFile) cfg.dem_file = demFile;
+      const lat = parseFloat(document.getElementById('demCenterLat')?.value);
+      const lon = parseFloat(document.getElementById('demCenterLon')?.value);
+      if (!isNaN(lat)) cfg.dem_center_lat = lat;
+      if (!isNaN(lon)) cfg.dem_center_lon = lon;
+      cfg.dem_size_km = parseInt(document.getElementById('demSizeSlider')?.value || 20);
+    }
+
+    // 웨이포인트
+    const waypoints = [];
+    if (cm === 'latlon') {
+      const sLat = parseFloat(document.getElementById('startLat')?.value);
+      const sLon = parseFloat(document.getElementById('startLon')?.value);
+      const sAlt = parseFloat(document.getElementById('startAlt')?.value || 400);
+      const eLat = parseFloat(document.getElementById('endLat')?.value);
+      const eLon = parseFloat(document.getElementById('endLon')?.value);
+      const eAlt = parseFloat(document.getElementById('endAlt')?.value || 400);
+      if (!isNaN(sLat) && !isNaN(sLon)) waypoints.push({ lat: sLat, lon: sLon, alt: sAlt });
+      if (!isNaN(eLat) && !isNaN(eLon)) waypoints.push({ lat: eLat, lon: eLon, alt: eAlt });
+    } else {
+      const sx = parseFloat(document.getElementById('startX')?.value || 1000);
+      const sy = parseFloat(document.getElementById('startY')?.value || 1000);
+      const sz = parseFloat(document.getElementById('startZ')?.value || 400);
+      const ex = parseFloat(document.getElementById('endX')?.value || 19000);
+      const ey = parseFloat(document.getElementById('endY')?.value || 19000);
+      const ez = parseFloat(document.getElementById('endZ')?.value || 400);
+      waypoints.push({ x: sx, y: sy, z: sz });
+      waypoints.push({ x: ex, y: ey, z: ez });
+    }
+
+    // 중간 웨이포인트 파싱
+    const wpList = document.getElementById('waypointList');
+    if (wpList) {
+      wpList.querySelectorAll('div').forEach((row, i) => {
+        const inputs = row.querySelectorAll('input[type="number"]');
+        if (inputs.length >= 2) {
+          if (cm === 'latlon') {
+            const lat2 = parseFloat(inputs[0].value);
+            const lon2 = parseFloat(inputs[1].value);
+            const alt2 = inputs[2] ? parseFloat(inputs[2].value || 400) : 400;
+            if (!isNaN(lat2) && !isNaN(lon2))
+              waypoints.splice(waypoints.length - 1, 0, { lat: lat2, lon: lon2, alt: alt2 });
+          } else {
+            const x2 = parseFloat(inputs[0].value);
+            const y2 = parseFloat(inputs[1].value);
+            const z2 = inputs[2] ? parseFloat(inputs[2].value || 400) : 400;
+            if (!isNaN(x2) && !isNaN(y2))
+              waypoints.splice(waypoints.length - 1, 0, { x: x2, y: y2, z: z2 });
+          }
+        }
+      });
+    }
+    if (waypoints.length >= 2) cfg.waypoints = waypoints;
+
+    return cfg;
   }
 
   function saveConfig() {
@@ -645,6 +980,55 @@ window.LAHEnvironment = (() => {
       reader.readAsText(file);
     };
     input.click();
+  }
+
+  // ── Cross-section from DEM ref path ──
+  function renderCrossSectionFromPath(refPts, meta) {
+    const el = document.getElementById('crossSectionChart');
+    if (!el || !refPts || refPts.length < 2 || !meta) return;
+
+    // 계산: 각 포인트의 누적 거리
+    const x_vals = [0];
+    for (let i = 1; i < refPts.length; i++) {
+      const dx = refPts[i].x - refPts[i-1].x;
+      const dy = refPts[i].y - refPts[i-1].y;
+      x_vals.push(x_vals[x_vals.length-1] + Math.sqrt(dx*dx + dy*dy));
+    }
+
+    const z_vals = refPts.map(p => p.z || meta.mean_elev + 180);
+    const aglMin = 120;
+    const aglPref = meta.mean_elev ? meta.mean_elev + 180 : 380;
+
+    // 지형 높이 가샘: 이상적으로 ref_path_pts는 z에 지형 고도와 AGL을 포함하면 좋았지만
+    // 여기서는 mean_elev 기준 모의 지형 프로파일로 표시
+    const terrain_vals = z_vals.map(z => Math.max(meta.min_elev, z - (meta.agl_pref || 180)));
+    const safe_vals    = terrain_vals.map(h => h + aglMin);
+
+    const traces = [
+      {
+        x: x_vals, y: terrain_vals,
+        fill: 'tozeroy', fillcolor: 'rgba(74,100,80,0.4)',
+        line: { color: '#4a7a55', width: 1 }, name: '지형', mode: 'lines',
+      },
+      {
+        x: x_vals, y: safe_vals,
+        line: { color: '#f59e0b', width: 1, dash: 'dot' }, name: 'AGL 최소', mode: 'lines',
+      },
+      {
+        x: x_vals, y: z_vals,
+        line: { color: '#00d4ff', width: 1.5 }, name: 'Ref 고도', mode: 'lines',
+      },
+    ];
+
+    Plotly.newPlot(el, traces, {
+      ...U.plotlyLayout({
+        margin: { l: 35, r: 5, t: 5, b: 25 },
+        showlegend: true,
+        legend: { orientation: 'h', y: -0.3, font: { size: 9, color: '#94a3b8' }, bgcolor: 'transparent' },
+        xaxis: { title: { text: '경로 거리 (m)', font: { size: 9 } }, gridcolor: '#1e2a3d', color: '#475569', tickfont: { size: 8 } },
+        yaxis: { title: { text: '고도 (m)', font: { size: 9 } }, gridcolor: '#1e2a3d', color: '#475569', tickfont: { size: 8 } },
+      })
+    }, { responsive: true, displayModeBar: false });
   }
 
   // ── Preview Loop ──

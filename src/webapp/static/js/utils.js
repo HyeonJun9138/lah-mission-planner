@@ -393,6 +393,70 @@ window.LAHUtils = (() => {
     setTimeout(() => { toast.style.opacity = '0'; toast.style.transition = 'opacity 0.3s'; setTimeout(() => toast.remove(), 300); }, duration);
   }
 
+  // ── Coordinate Conversion (Client-side Approximate) ──
+  /**
+   * WGS84 위경도 ↔ UTM52N 근사 변환 (클라이언트 측 표시용).
+   * 정밀 변환은 서버 측(/api/terrain/dem/elevation) 사용 권장.
+   *
+   * @param {number} lat   위도 [°]
+   * @param {number} lon   경도 [°]
+   * @param {boolean} toUTM  true: lat/lon→UTM, false: UTM→lat/lon
+   * @param {number} [utmX]  UTM X (toUTM=false 시)
+   * @param {number} [utmY]  UTM Y (toUTM=false 시)
+   * @returns {{ x: number, y: number } | { lat: number, lon: number }}
+   */
+  function coordConvert(lat, lon, toUTM = true, utmX = 0, utmY = 0) {
+    // UTM Zone 52N (중앙 경선 129°E) 기준 Mercator 근사
+    const DEG_TO_RAD = Math.PI / 180;
+    const a = 6378137.0;       // WGS84 장반경 [m]
+    const k0 = 0.9996;         // 축척 계수
+    const lon0 = 129.0;        // Zone 52N 중앙 경선 [°]
+    const E0 = 500000.0;       // 동방향 가산수 [m]
+    const N0 = 0.0;            // 북방향 가산수 (북반구) [m]
+
+    if (toUTM) {
+      // WGS84 → UTM52N (근사 Transverse Mercator)
+      const latR = lat * DEG_TO_RAD;
+      const lonR = lon * DEG_TO_RAD;
+      const lon0R = lon0 * DEG_TO_RAD;
+      const N = a / Math.sqrt(1 - 0.00669438 * Math.sin(latR) ** 2);
+      const T = Math.tan(latR) ** 2;
+      const C = 0.006739496742 * Math.cos(latR) ** 2;
+      const A = Math.cos(latR) * (lonR - lon0R);
+      const M = a * (
+        (1 - 0.00669438 / 4 - 3 * 0.00669438 ** 2 / 64) * latR
+        - (3 * 0.00669438 / 8 + 3 * 0.00669438 ** 2 / 32) * Math.sin(2 * latR)
+        + (15 * 0.00669438 ** 2 / 256) * Math.sin(4 * latR)
+      );
+      const x = k0 * N * (A + (1 - T + C) * A ** 3 / 6) + E0;
+      const y = k0 * (M + N * Math.tan(latR) * (A ** 2 / 2 + (5 - T + 9 * C) * A ** 4 / 24)) + N0;
+      return { x: Math.round(x), y: Math.round(y) };
+    } else {
+      // UTM52N → WGS84 (역 근사)
+      const x1 = utmX - E0;
+      const y1 = utmY - N0;
+      const lon0R = lon0 * DEG_TO_RAD;
+      const M = y1 / k0;
+      const mu = M / (a * (1 - 0.00669438 / 4 - 3 * 0.00669438 ** 2 / 64));
+      const e1 = (1 - Math.sqrt(1 - 0.00669438)) / (1 + Math.sqrt(1 - 0.00669438));
+      const phi1 = mu + (3 * e1 / 2 - 27 * e1 ** 3 / 32) * Math.sin(2 * mu)
+        + (21 * e1 ** 2 / 16 - 55 * e1 ** 4 / 32) * Math.sin(4 * mu);
+      const N1 = a / Math.sqrt(1 - 0.00669438 * Math.sin(phi1) ** 2);
+      const T1 = Math.tan(phi1) ** 2;
+      const C1 = 0.006739496742 * Math.cos(phi1) ** 2;
+      const R1 = a * (1 - 0.00669438) / (1 - 0.00669438 * Math.sin(phi1) ** 2) ** 1.5;
+      const D = x1 / (N1 * k0);
+      const latOut = phi1 - (N1 * Math.tan(phi1) / R1) * (
+        D ** 2 / 2 - (5 + 3 * T1 + 10 * C1 - 4 * C1 ** 2) * D ** 4 / 24
+      );
+      const lonOut = lon0R + (D - (1 + 2 * T1 + C1) * D ** 3 / 6) / Math.cos(phi1);
+      return {
+        lat: +(latOut / (Math.PI / 180)).toFixed(7),
+        lon: +(lonOut / (Math.PI / 180)).toFixed(7),
+      };
+    }
+  }
+
   return {
     fmt, fmtInt, fmtPct, fmtTime, fmtNow,
     colorScale, riskColor, heightColor,
@@ -404,6 +468,7 @@ window.LAHUtils = (() => {
     drawGrid, drawHelicopterMarker,
     debounce, throttle,
     randRange, randInt, randChoice,
-    toast
+    toast,
+    coordConvert,
   };
 })();

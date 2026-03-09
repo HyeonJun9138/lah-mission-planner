@@ -188,6 +188,35 @@ class WaypointsRequest(BaseModel):
     step_m: float = 50.0
 
 
+class EnvInitRequest(BaseModel):
+    """완전한 환경 초기화 요청 (DEM 포함)."""
+    terrain_type: str = "synthetic"  # "synthetic" 또는 "dem"
+
+    # Synthetic terrain
+    terrain_size_x: Optional[int] = None
+    terrain_size_y: Optional[int] = None
+    terrain_resolution: Optional[float] = None
+    terrain_seed: Optional[int] = None
+
+    # DEM terrain
+    dem_file: Optional[str] = None
+    dem_center_lat: Optional[float] = None
+    dem_center_lon: Optional[float] = None
+    dem_size_km: Optional[float] = None
+    dem_resource_dir: Optional[str] = None
+
+    # Waypoints (lat/lon 또는 local m)
+    waypoints: Optional[List[Dict[str, float]]] = None
+    coord_mode: str = "local"  # "local" (m) 또는 "latlon" (도)
+    step_m: float = 50.0
+
+    # 교랑 파라미터
+    soft_corridor_m: Optional[float] = None
+    hard_corridor_m: Optional[float] = None
+    agl_safe_min: Optional[float] = None
+    agl_pref: Optional[float] = None
+
+
 # ------------------------------------------------------------------
 # 상태 엔드포인트
 # ------------------------------------------------------------------
@@ -588,20 +617,22 @@ async def get_episode(ep_id: str) -> Dict[str, Any]:
 @app.get("/api/terrain/heightmap")
 async def terrain_heightmap() -> Dict[str, Any]:
     """
-    합성 지형 heightmap 데이터 반환 (JSON).
+    현재 활성 지형 heightmap 데이터 반환 (JSON).
+    DEM 지형인 경우 crs, origin_utm 정보도 포함.
 
     Returns:
-        {"heightmap": [...], "size_x": ..., "size_y": ..., "resolution": ...}
+        {"heightmap": [...], "size_x": ..., "size_y": ..., "resolution": ...,
+         "crs": ..., "origin_utm": [x, y] (DEM 지형일 때)}
     """
     env = _get_env()
     terrain = env.terrain
 
     # 다운샘플링 (웹 전송 크기 제한)
     hm = terrain.heightmap
-    step = max(1, hm.shape[0] // 100)
+    step = max(1, max(hm.shape) // 100)
     hm_small = hm[::step, ::step]
 
-    return {
+    result: Dict[str, Any] = {
         "heightmap": hm_small.tolist(),
         "size_x": terrain.size_x,
         "size_y": terrain.size_y,
@@ -611,6 +642,19 @@ async def terrain_heightmap() -> Dict[str, Any]:
         "max_elev": float(hm.max()),
         "world_extent": list(terrain.world_extent),
     }
+
+    # DEM 지형 전용 정보 추가
+    from src.terrain.dem_loader import DEMTerrain
+    if isinstance(terrain, DEMTerrain):
+        result["terrain_type"] = "dem"
+        result["crs"] = "EPSG:32652"
+        result["origin_utm"] = [terrain.origin_utm_x, terrain.origin_utm_y]
+        result["source_file"] = terrain._source_file
+    else:
+        result["terrain_type"] = "synthetic"
+        result["crs"] = "local"
+
+    return result
 
 
 @app.get("/api/terrain/features")
@@ -756,6 +800,238 @@ async def config_current() -> Dict[str, Any]:
     return {
         "config": _current_config,
     }
+
+
+# ------------------------------------------------------------------
+# DEM 지형 엔드포인트
+# ------------------------------------------------------------------
+
+@app.get("/api/terrain/dem/list")
+async def terrain_dem_list() -> Dict[str, Any]:
+    """
+    resource/ 디렉토리의 DEM 파일 목록 및 메타데이터 반환.
+
+    Returns:
+        {
+            "dems": [
+                {
+                    "name": "파일명",
+                    "type": "srtm_1arc" | "custom_utm",
+                    "crs": "좌표계",
+                    "bounds": [...],
+                    "resolution_m": 30.0,
+                    "shape": [H, W],
+                    "elev_min": ...,
+                    "elev_max": ...,
+                }
+            ],
+            "count": ...
+        }
+    """
+    from src.terrain.dem_loader import list_available_dems
+
+    resource_dir = Path("resource")
+    if not resource_dir.exists():
+        return {"dems": [], "count": 0, "error": "resource 디렉토리가 없습니다."}
+
+    dems = list_available_dems(resource_dir)
+    return {
+        "dems": dems,
+        "count": len(dems),
+    }
+
+
+@app.get("/api/terrain/dem/elevation")
+async def terrain_dem_elevation(
+    lat: float,
+    lon: float,
+) -> Dict[str, Any]:
+    """
+    현재 활성 환경에서 위경도 지점의 고도 조회.
+
+    Args:
+        lat: 위도 [°]
+        lon: 경도 [°]
+
+    Returns:
+        {"lat": ..., "lon": ..., "elevation_m": ..., "local_x": ..., "local_y": ...}
+    """
+    global _env
+
+    env = _get_env()
+    terrain = env.terrain
+
+    # DEMTerrain인 경우 latlon_to_local 사용
+    from src.terrain.dem_loader import DEMTerrain
+    if isinstance(terrain, DEMTerrain):
+        local_x, local_y = terrain.latlon_to_local(lat, lon)
+    else:
+        # SyntheticTerrain: 대략적 변환 (UTM 기준)
+        from pyproj import Transformer
+        t = Transformer.from_crs("EPSG:4326", "EPSG:32652", always_xy=True)
+        ux, uy = t.transform(lon, lat)
+        # Synthetic terrain은 UTM 원점 정보가 없으므로 0으로 가정
+        local_x, local_y = ux, uy
+
+    elev = terrain.get_elevation(local_x, local_y)
+
+    return {
+        "lat": lat,
+        "lon": lon,
+        "elevation_m": round(float(elev), 2),
+        "local_x": round(float(local_x), 1),
+        "local_y": round(float(local_y), 1),
+    }
+
+
+@app.post("/api/env/init")
+async def env_init(request: EnvInitRequest) -> Dict[str, Any]:
+    """
+    환경 전체 초기화 (terrain_type, DEM 선택, 웨이포인트 포함).
+
+    Args:
+        terrain_type: "synthetic" 또는 "dem"
+        dem_file / dem_center_lat / dem_center_lon / dem_size_km: DEM 설정
+        waypoints: lat/lon 또는 local m 웨이포인트 리스트
+        coord_mode: "local" 또는 "latlon"
+
+    Returns:
+        {
+            "status": "ok",
+            "terrain_type": ...,
+            "terrain_meta": {...},
+            "heightmap_preview": [[...], ...],
+            "ref_path_pts": [...],
+        }
+    """
+    global _env, _current_obs, _current_config
+
+    # env_config 구성
+    env_cfg: Dict[str, Any] = {**_current_config.get("env", {})}
+    env_cfg["terrain_type"] = request.terrain_type
+
+    if request.terrain_type == "dem":
+        if request.dem_file:
+            env_cfg["dem_file"] = request.dem_file
+        if request.dem_center_lat is not None:
+            env_cfg["dem_center_lat"] = request.dem_center_lat
+        if request.dem_center_lon is not None:
+            env_cfg["dem_center_lon"] = request.dem_center_lon
+        if request.dem_size_km is not None:
+            env_cfg["dem_size_km"] = request.dem_size_km
+        if request.dem_resource_dir:
+            env_cfg["dem_resource_dir"] = request.dem_resource_dir
+
+    if request.terrain_size_x is not None:
+        env_cfg["terrain_size_x"] = request.terrain_size_x
+    if request.terrain_size_y is not None:
+        env_cfg["terrain_size_y"] = request.terrain_size_y
+    if request.terrain_resolution is not None:
+        env_cfg["terrain_resolution"] = request.terrain_resolution
+    if request.terrain_seed is not None:
+        env_cfg["terrain_seed"] = request.terrain_seed
+    if request.soft_corridor_m is not None:
+        env_cfg["soft_corridor_m"] = request.soft_corridor_m
+    if request.hard_corridor_m is not None:
+        env_cfg["hard_corridor_m"] = request.hard_corridor_m
+    if request.agl_safe_min is not None:
+        env_cfg["agl_safe_min"] = request.agl_safe_min
+    if request.agl_pref is not None:
+        env_cfg["agl_pref"] = request.agl_pref
+
+    # 웨이포인트 전처리 (lat/lon 지정 시 로컈 좌표로 변환)
+    ref_path_obj = None
+    if request.waypoints:
+        from src.envs.lah_env import LAHLocalPathEnv
+        from src.terrain.dem_loader import DEMTerrain
+        from src.route.ref_path import RefPath
+
+        if request.coord_mode == "latlon":
+            # 임시 지형 로드하여 좌표 변환
+            try:
+                tmp_env = LAHLocalPathEnv(config=env_cfg)
+                terrain = tmp_env.terrain
+                converted = []
+                for wp in request.waypoints:
+                    lx, ly = terrain.latlon_to_local(wp["lat"], wp["lon"]) \
+                        if isinstance(terrain, DEMTerrain) else (wp.get("x", 0), wp.get("y", 0))
+                    lz = wp.get("alt", terrain.get_elevation(lx, ly) + env_cfg.get("agl_pref", 180.0))
+                    converted.append((lx, ly, lz))
+                ref_path_obj = RefPath.from_waypoints(converted, step_m=request.step_m)
+                env_cfg["_tmp_ref_path"] = ref_path_obj
+            except Exception as e:
+                logger.warning(f"웨이포인트 좌표 변환 실패: {e}")
+        else:
+            pts = []
+            for wp in request.waypoints:
+                pts.append((
+                    wp.get("x", 0.0),
+                    wp.get("y", 0.0),
+                    wp.get("z", env_cfg.get("agl_pref", 180.0)),
+                ))
+            if len(pts) >= 2:
+                ref_path_obj = RefPath.from_waypoints(pts, step_m=request.step_m)
+
+    # 환경 생성
+    try:
+        from src.envs.lah_env import LAHLocalPathEnv
+        new_env = LAHLocalPathEnv(
+            config=env_cfg,
+            ref_path=ref_path_obj,
+        )
+        _env = new_env
+        _current_obs = None
+        _current_config["env"] = env_cfg
+
+        # heightmap 프리븷 (100x100 다운샘플)
+        hm = new_env.terrain.heightmap
+        step = max(1, max(hm.shape) // 100)
+        hm_small = hm[::step, ::step]
+
+        # 지형 메타데이터
+        terrain_meta: Dict[str, Any] = {
+            "size_x": new_env.terrain.size_x,
+            "size_y": new_env.terrain.size_y,
+            "resolution": new_env.terrain.resolution,
+            "world_extent": list(new_env.terrain.world_extent),
+            "min_elev": float(hm.min()),
+            "max_elev": float(hm.max()),
+            "mean_elev": float(hm.mean()),
+        }
+
+        # DEM 전용 정보
+        from src.terrain.dem_loader import DEMTerrain
+        if isinstance(new_env.terrain, DEMTerrain):
+            terrain_meta["crs"] = "EPSG:32652 (UTM52N)"
+            terrain_meta["origin_utm"] = [
+                new_env.terrain.origin_utm_x,
+                new_env.terrain.origin_utm_y,
+            ]
+            terrain_meta["source_file"] = new_env.terrain._source_file
+        else:
+            terrain_meta["crs"] = "local_synthetic"
+
+        # ref path 포인트
+        ref_pts = []
+        if hasattr(new_env, "ref_path") and new_env.ref_path is not None:
+            rp = new_env.ref_path
+            pts_arr = rp.points  # shape (N, 3)
+            sub_step = max(1, len(pts_arr) // 50)
+            for pt in pts_arr[::sub_step]:
+                ref_pts.append({"x": float(pt[0]), "y": float(pt[1]), "z": float(pt[2])})
+
+        return {
+            "status": "ok",
+            "terrain_type": request.terrain_type,
+            "terrain_meta": terrain_meta,
+            "heightmap_preview": hm_small.tolist(),
+            "heightmap_step": step,
+            "ref_path_pts": ref_pts,
+        }
+
+    except Exception as e:
+        logger.error(f"환경 초기화 오류: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"환경 초기화 실패: {str(e)}")
 
 
 # ------------------------------------------------------------------

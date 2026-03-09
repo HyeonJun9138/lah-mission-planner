@@ -1,9 +1,17 @@
 """
 LAH 회전익기 안전 경로계획 강화학습 환경 (Gymnasium)
 - 설계서 11절(Observation), 10절(Action), 14절(학습 환경 설계) 구현
-- DEM 없이 synthetic terrain으로 즉시 동작
+- SyntheticTerrain 또는 DEMTerrain 선택 지원
 - Dict observation: state_vec, lookahead_ref, local_patch
 - Box(4,) action: yaw_rate, vz, accel, hold
+
+config 키 (DEM 관련):
+    terrain_type (str): "synthetic" (기본) 또는 "dem"
+    dem_file (str): DEM GeoTIFF 파일 경로 (terrain_type=="dem")
+    dem_center_lat (float): DEM 크롭 중심 위도 (선택)
+    dem_center_lon (float): DEM 크롭 중심 경도 (선택)
+    dem_size_km (float): DEM 크롭 크기 [km] (선택, 기본 20km)
+    dem_resource_dir (str): DEM 파일 디렉토리 (dem_file 없을 때 사용)
 """
 
 from __future__ import annotations
@@ -15,6 +23,7 @@ from typing import Dict, Any, Optional, List, Tuple
 
 from src.terrain.synthetic import SyntheticTerrain
 from src.terrain.features import compute_slope, compute_roughness, compute_local_relief, compute_tpi
+from src.terrain.dem_loader import DEMTerrain
 from src.route.ref_path import RefPath
 from src.route.frenet import project_to_path, compute_heading_error, get_z_ref_error
 from src.route.corridor import Corridor
@@ -30,13 +39,23 @@ from src.sim.metrics import EpisodeMetrics
 # ------------------------------------------------------------------
 
 DEFAULT_ENV_CONFIG: Dict[str, Any] = {
-    # 지형 파라미터
+    # 지형 유형: "synthetic" 또는 "dem"
+    "terrain_type": "synthetic",
+
+    # Synthetic terrain 파라미터
     "terrain_size_x": 500,
     "terrain_size_y": 500,
     "terrain_resolution": 30.0,
     "terrain_base_elev": 200.0,
     "terrain_max_elev": 1200.0,
     "terrain_seed": 42,
+
+    # DEM terrain 파라미터
+    "dem_file": None,           # GeoTIFF 파일 경로 (직접 지정 시)
+    "dem_center_lat": None,     # DEM 크롭 중심 위도 [°]
+    "dem_center_lon": None,     # DEM 크롭 중심 경도 [°]
+    "dem_size_km": 20.0,        # DEM 크롭 크기 [km]
+    "dem_resource_dir": "resource",  # DEM 파일 디렉토리
 
     # 경로 파라미터
     "route_resample_m": 50.0,
@@ -118,8 +137,13 @@ class LAHLocalPathEnv(gym.Env):
 
         # 지형 초기화
         if terrain is not None:
+            # 외부에서 지형 객체 직접 전달
             self.terrain = terrain
+        elif self.config.get("terrain_type", "synthetic") == "dem":
+            # DEM 지형 로드
+            self.terrain = self._load_dem_terrain()
         else:
+            # Synthetic terrain (기본)
             self.terrain = SyntheticTerrain(
                 size_x=self.config["terrain_size_x"],
                 size_y=self.config["terrain_size_y"],
@@ -566,6 +590,7 @@ class LAHLocalPathEnv(gym.Env):
         기본 직선 참조 경로 생성 (테스트/Stage0 용도).
 
         지형 중앙을 가로지르는 직선 경로.
+        DEM 지형의 경우 크기에 맞게 자동 조정.
         """
         x_min, x_max, y_min, y_max = self.terrain.world_extent
         cx = (x_min + x_max) / 2
@@ -575,8 +600,20 @@ class LAHLocalPathEnv(gym.Env):
         mean_elev = float(self.terrain.heightmap.mean())
         z_ref = mean_elev + self.config.get("agl_pref", 180.0)
 
-        start = (x_min + 500.0, cy, z_ref)
-        end = (x_max - 500.0, cy, z_ref)
+        # 지형 크기에 맞은 마진 계산
+        extent_x = x_max - x_min
+        extent_y = y_max - y_min
+        margin_x = min(500.0, extent_x * 0.1)  # 전체 크기의 10% 또는 500m
+        margin_y = min(500.0, extent_y * 0.1)
+
+        start = (x_min + margin_x, cy, z_ref)
+        end = (x_max - margin_x, cy, z_ref)
+
+        # 시작/끝점이 너무 가깨우면 직선 경로가 마다 편 (RefPath 최소 2포인트)
+        if abs(start[0] - end[0]) < self.config["route_resample_m"] * 2:
+            # Y방향으로 경로 설정
+            start = (cx, y_min + margin_y, z_ref)
+            end   = (cx, y_max - margin_y, z_ref)
 
         return RefPath.from_waypoints(
             [start, end],
@@ -633,6 +670,47 @@ class LAHLocalPathEnv(gym.Env):
             hold_timer=0.0,
         )
 
+    def _load_dem_terrain(self) -> DEMTerrain:
+        """
+        config 파라미터로부터 DEMTerrain 로드.
+
+        config 키:
+            dem_file: GeoTIFF 파일 경로 (짇접 지정 시)
+            dem_center_lat / dem_center_lon: 크롭 중심 위경도
+            dem_size_km: 크롭 크기 [km]
+            dem_resource_dir: DEM 파일 디렉토리
+
+        Returns:
+            DEMTerrain 인스턴스
+        """
+        dem_file = self.config.get("dem_file")
+        size_km = float(self.config.get("dem_size_km", 20.0))
+        center_lat = self.config.get("dem_center_lat")
+        center_lon = self.config.get("dem_center_lon")
+
+        if dem_file is not None:
+            # 직접 파일 지정
+            return DEMTerrain.from_file(
+                tif_path=dem_file,
+                crop_size_km=size_km,
+                crop_center_lat=center_lat,
+                crop_center_lon=center_lon,
+            )
+        else:
+            # 위경도 + 크기로 검색
+            resource_dir = self.config.get("dem_resource_dir", "resource")
+            if center_lat is None or center_lon is None:
+                raise ValueError(
+                    "DEM terrain 사용 시 dem_file 또는 "
+                    "(dem_center_lat + dem_center_lon) 지정이 필요합니다."
+                )
+            return DEMTerrain.from_region(
+                resource_dir=resource_dir,
+                center_lat=center_lat,
+                center_lon=center_lon,
+                size_km=size_km,
+            )
+
     def _precompute_terrain_features(self) -> None:
         """지형 특징 맵 사전 계산 (학습 속도 향상)."""
         # slope와 roughness는 SyntheticTerrain의 property로 지연 계산됨
@@ -661,12 +739,12 @@ class LAHLocalPathEnv(gym.Env):
         """
         self.ref_path = ref_path
 
-    def set_terrain(self, terrain: SyntheticTerrain) -> None:
+    def set_terrain(self, terrain) -> None:
         """
-        지형 교체.
+        지형 교체 (SyntheticTerrain 또는 DEMTerrain).
 
         Args:
-            terrain: 새 SyntheticTerrain 인스턴스
+            terrain: 새 SyntheticTerrain 또는 DEMTerrain 인스턴스
         """
         self.terrain = terrain
         self._precompute_terrain_features()

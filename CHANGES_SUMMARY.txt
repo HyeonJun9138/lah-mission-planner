@@ -1,0 +1,185 @@
+====================================================================
+LAH Mission Planner — DEM 지형 로더 + 환경 연결 + API/UI 통합
+변경 요약
+====================================================================
+작성일: 2026-03-09
+작성자: AI 에이전트
+
+--------------------------------------------------------------------
+1. 신규 파일: src/terrain/dem_loader.py
+--------------------------------------------------------------------
+• DEMTerrain 클래스 구현 (SyntheticTerrain과 동일한 인터페이스)
+  - SyntheticTerrain의 모든 공개 속성/메서드 제공:
+    heightmap, size_x, size_y, resolution, world_extent,
+    get_elevation(), get_elevation_batch(), get_slope(), get_roughness(),
+    get_local_patch(), slope_map, roughness_map
+
+  - 추가 속성 (DEM 전용):
+    origin_utm_x, origin_utm_y  → UTM 절대 좌표 원점 [m]
+    crs_info                    → 좌표 참조 시스템 정보 dict
+    latlon_to_local(lat, lon)   → WGS84 → 로컬 미터 변환
+    local_to_latlon(x, y)       → 로컬 미터 → WGS84 변환
+
+  - 팩토리 메서드:
+    DEMTerrain.from_file(tif_path, crop_size_km, ...)
+      → 단일 GeoTIFF 파일 로드. UTM52N(EPSG:32652)으로 자동 재투영.
+      → crop_size_km 지정 시 중심점 주변을 크롭.
+
+    DEMTerrain.from_region(resource_dir, center_lat, center_lon, size_km)
+      → 위경도 중심 + 크기로 가장 적합한 DEM 자동 선택.
+      → SRTM 타일 여러 개 필요 시 자동 모자이크(rasterio.merge).
+      → UTM 커스텀 48km 타일 우선 선택.
+
+• list_available_dems(resource_dir) 함수
+  → resource/ 디렉토리의 모든 GeoTIFF 파일 스캔
+  → 각 파일의 타입(srtm_1arc / custom_utm), CRS, bounds,
+     해상도[m], shape, nodata, 고도 범위 반환
+
+• 지원 DEM 파일 (resource/ 디렉토리):
+  SRTM 1-arc-second (EPSG:4326, ~30m):
+    n37_e126_1arc_v3.tif, n37_e127_1arc_v3.tif, n37_e128_1arc_v3.tif
+    n38_e126_1arc_v3.tif, n38_e127_1arc_v3.tif, n38_e128_1arc_v3.tif
+
+  커스텀 48km 타일 (EPSG:32652 UTM52N, 30m):
+    Hongik_48km.tif  (UTM: 304821~353151 E, 4088843~4137023 N)
+    Inje_48km.tif    (UTM: 411977~460307 E, 4164528~4212708 N)
+    Jipo_48km.tif    (UTM: 336468~384798 E, 4189317~4237497 N)
+
+• nodata 처리:
+  → -9999 (커스텀 타일) 및 -32767 (SRTM) 처리
+  → scipy.ndimage.distance_transform_edt로 nearest-neighbor 보간
+
+• 의존 패키지: rasterio, numpy, scipy, pyproj (모두 설치됨)
+
+--------------------------------------------------------------------
+2. 변경 파일: src/terrain/__init__.py
+--------------------------------------------------------------------
+• DEMTerrain, list_available_dems 가져오기 및 __all__ 추가
+
+--------------------------------------------------------------------
+3. 변경 파일: src/envs/lah_env.py
+--------------------------------------------------------------------
+• DEFAULT_ENV_CONFIG에 DEM 관련 키 추가:
+  terrain_type    : "synthetic" (기본) 또는 "dem"
+  dem_file        : GeoTIFF 파일 경로 (직접 지정)
+  dem_center_lat  : DEM 크롭 중심 위도 [°]
+  dem_center_lon  : DEM 크롭 중심 경도 [°]
+  dem_size_km     : DEM 크롭 크기 [km] (기본 20.0)
+  dem_resource_dir: DEM 파일 디렉토리 (기본 "resource")
+
+• LAHLocalPathEnv.__init__ 수정:
+  → terrain_type == "dem" 이면 _load_dem_terrain() 호출
+  → 기존 SyntheticTerrain 동작 완전 보존 (하위 호환)
+
+• _load_dem_terrain() 메서드 추가:
+  → dem_file 있으면 DEMTerrain.from_file()
+  → dem_center_lat/lon 있으면 DEMTerrain.from_region()
+
+• _make_default_ref_path() 개선:
+  → 지형 크기에 따른 마진 자동 계산 (500m 또는 10%)
+  → 시작/끝이 너무 가까우면 Y방향 경로로 전환
+
+• set_terrain() 타입 힌트를 SyntheticTerrain | DEMTerrain으로 확장
+
+--------------------------------------------------------------------
+4. 변경 파일: src/webapp/api.py
+--------------------------------------------------------------------
+• 신규 Pydantic 모델 추가: EnvInitRequest
+  → terrain_type, dem_file, dem_center_lat/lon, dem_size_km,
+     waypoints, coord_mode (local/latlon), 교랑 파라미터 등
+
+• 신규 엔드포인트:
+  GET  /api/terrain/dem/list
+    → resource/ 디렉토리 DEM 파일 목록 + 메타데이터 반환
+
+  GET  /api/terrain/dem/elevation?lat=...&lon=...
+    → 현재 활성 환경에서 위경도 지점 고도 조회
+    → DEMTerrain이면 latlon_to_local() 사용
+
+  POST /api/env/init
+    → 완전한 환경 초기화 (terrain_type, DEM 설정, 웨이포인트)
+    → coord_mode="latlon" 시 위경도 → 로컬 좌표 변환
+    → heightmap_preview (100x100 다운샘플), terrain_meta, ref_path_pts 반환
+
+• GET /api/terrain/heightmap 수정:
+  → DEM 지형 시 terrain_type="dem", crs, origin_utm 필드 추가
+  → 다운샘플링 기준을 max(H,W) 기준으로 개선
+
+--------------------------------------------------------------------
+5. 변경 파일: src/webapp/static/js/environment.js
+--------------------------------------------------------------------
+• 지형 유형 토글 시 DEM 전용 UI 섹션 표시/숨김:
+  - 합성 지형: 맵 크기, 해상도, 복잡도 슬라이더
+  - DEM: DEM 파일 드롭다운, 중심 lat/lon 입력, 크기 슬라이더
+
+• DEM 프리셋 버튼 (홍익, 인제, 지포):
+  → /api/terrain/dem/list에서 자동 로드, 선택 시 메타 표시
+
+• 웨이포인트 좌표 모드 토글 (로컬 m / WGS84 lat/lon):
+  → latlon 모드: startLat/startLon/startAlt + endLat/endLon/endAlt 입력
+  → local 모드: 기존 startX/startY/startZ 입력 유지
+
+• initEnv() 대폭 개선:
+  → POST /api/env/init 호출 (기존 더미 처리 제거)
+  → 서버 응답의 heightmap_preview로 캔버스 실시간 업데이트
+  → ref_path_pts로 단면도(cross-section) 업데이트
+  → 오류 시 에러 토스트 표시 (더 이상 데모 모드로 폴백하지 않음)
+
+• readConfig() 전면 재작성:
+  → terrain_type에 따라 DEM/합성 설정 분기
+  → 좌표 모드에 따라 waypoints 구성 방식 분기
+  → API가 기대하는 키 이름(snake_case)으로 직접 구성
+
+• drawPreview() 개선:
+  → 합성 terrain: 기존 Float32Array 사용
+  → DEM terrain: 서버에서 받은 2D 배열(heightmap_preview) 사용
+  → 캔버스 마우스 hover: DEM 모드에서 로컬 좌표 + lat/lon 병렬 표시
+
+• renderCrossSectionFromPath() 신규 함수:
+  → ref_path_pts(서버 반환)로 단면도 그리기
+
+• loadDemList(), onDemFileSelect(), applyDemPreset() 신규 함수
+
+--------------------------------------------------------------------
+6. 변경 파일: src/webapp/static/js/utils.js
+--------------------------------------------------------------------
+• coordConvert(lat, lon, toUTM, utmX, utmY) 함수 추가:
+  → WGS84 ↔ UTM52N 근사 변환 (Transverse Mercator)
+  → 클라이언트 측 캔버스 좌표 표시용
+  → 정밀 변환이 필요하면 /api/terrain/dem/elevation 사용 권장
+
+--------------------------------------------------------------------
+7. 설치된 패키지
+--------------------------------------------------------------------
+• pyproj — WGS84 ↔ UTM 좌표 변환
+  (rasterio, numpy, scipy는 이미 설치됨)
+
+--------------------------------------------------------------------
+8. 검증 결과
+--------------------------------------------------------------------
+✅ list_available_dems('resource') → 9개 DEM 반환
+✅ DEMTerrain.from_file('resource/Hongik_48km.tif', crop_size_km=10)
+   → size=332x332, res=30m, elev=[6,205]m
+✅ DEMTerrain.from_region('resource', 37.5, 127.0, 30.0)
+   → SRTM 2타일 모자이크, size=1500x1500, res=20m
+✅ 모든 인터페이스 메서드 동작 확인
+   (get_elevation, get_elevation_batch, get_slope, get_roughness,
+    get_local_patch, slope_map, roughness_map, world_extent,
+    latlon_to_local, local_to_latlon)
+✅ LAHLocalPathEnv() — Synthetic terrain 동작 그대로 유지
+✅ LAHLocalPathEnv(config={'terrain_type':'dem', 'dem_file':...})
+   → obs['state_vec'].shape == (13,) 확인
+✅ 5 스텝 step() 순환 동작 확인
+✅ SyntheticTerrain 인터페이스 완전 호환 확인
+✅ API 엔드포인트 3개 등록 확인
+   (/api/terrain/dem/list, /api/terrain/dem/elevation, /api/env/init)
+
+--------------------------------------------------------------------
+9. 주의사항
+--------------------------------------------------------------------
+• SRTM 모자이크 시 resource/_mosaic_tmp.tif 임시 파일 생성됨
+  → .gitignore에 추가 권장
+• DEMTerrain은 lazy computation으로 slope_map/roughness_map 첫 접근 시 계산
+  → 큰 DEM(1500x1500+)에서 roughness_map 계산에 수십초 소요 가능
+• SyntheticTerrain 기본 동작은 전혀 변경되지 않음 (하위 호환 유지)
+====================================================================
